@@ -52,6 +52,12 @@ faceDetect_path = 'models/res10_300x300_ssd_iter_140000.caffemodel'
 faceDetectModel = cv2.dnn.readNetFromCaffe(prototxt_path, faceDetect_path)
 faceDetectModel.setPreferableTarget(cv2.dnn.DNN_TARGET_MYRIAD)
 
+# マスクモデル
+classes = {0: 'Mask', 1: 'No Mask'}
+mask_model_path = 'models/face_mask_detector.onnx'
+faceMaskNet = cv2.dnn.readNetFromONNX(mask_model_path)
+faceMaskNet.setPreferableTarget(cv2.dnn.DNN_TARGET_MYRIAD)
+
 def move(svn,in0,in1,step):
 	if in1 > in0:
 		for duty in range(in0,in1,step):
@@ -107,6 +113,27 @@ def detect_face(image):
     else:
         return detect_faces, positions
 
+
+def preprocess(img_data):
+    ''' 画像データのスケーリング/正規化 '''
+    mean_vec = np.array([0.485, 0.456, 0.406])[::-1]
+    stddev_vec = np.array([0.229, 0.224, 0.225])[::-1]
+    norm_img_data = np.zeros(img_data.shape).astype('float32')
+    for i in range(img_data.shape[2]):
+        # for each pixel in each channel, divide the value by 255 to get value between [0, 1] and then normalize
+        norm_img_data[:, :, i] = (
+            img_data[:, :, i]/255 - mean_vec[i]) / stddev_vec[i]
+    return norm_img_data
+
+
+def detect_mask(face):
+    face = cv2.resize(face, (224, 224))
+    preprocessed = preprocess(face)
+    blob = cv2.dnn.blobFromImage(preprocessed)
+    faceMaskNet.setInput(blob)
+    pred = np.squeeze(faceMaskNet.forward())
+    return pred
+
 if __name__ == '__main__':
     with picamera.PiCamera() as camera:
         with picamera.array.PiRGBArray(camera) as stream:
@@ -126,7 +153,9 @@ if __name__ == '__main__':
 
                 if position:
                     (x, y, w, h) = position
-                    color = (0, 0, 255)
+                    prediction = detect_mask(face)
+                    max_index = np.argsort(-prediction)[0]
+                    label = classes[max_index]
                     try:
                         # 顔の認識範囲に合わせて配列絞り込み->体温を推定
                         face_temp_array = temp_array[int(y/30):int((y+h)/30)][int(x/30):int((x+w)/30)]
@@ -134,12 +163,12 @@ if __name__ == '__main__':
                         result_text = 'temp: {}'.format(face_temp)
                         print(result_text)
                     except ValueError:
-                        break
+                        pass
                     # 結果をプロット
                     font = cv2.FONT_HERSHEY_SIMPLEX
                     size = 0.7
                     weight = 2
-                    color = (157, 216, 100)
+                    color = (157, 216, 100) if label == "Mask" else (71, 99, 255)
                     cv2.rectangle(img, (x, y), (x+w, y+h), color, thickness = weight)
 
                     #ラベルの作成
@@ -169,7 +198,7 @@ if __name__ == '__main__':
                 cv2.imshow('heatmap', tharmal_img)
 
                 # "q"でウィンドウを閉じる
-                if cv2.waitKey(30) & 0xFF == ord("q"):
+                if cv2.waitKey(30) == 27:
                     break
 
                 # streamをリセット
